@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
------------------------------------------------
-# File: fed_update.py
-# This file is created by Chuanting Zhang
-# Email: chuanting.zhang@kaust.edu.sa
-# Date: 2020-01-13 (YYYY-MM-DD)
------------------------------------------------
-"""
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -229,6 +221,37 @@ def test_inference_esm(args, model, dataset):
             ari_res = ari_res.float().to(device)
             y = y.float().to(device)
             pred = model(xc, xp, ari_res)
+
+            batch_loss = criterion(y, pred)
+            loss += batch_loss.item()
+
+            pred_list.append(pred.detach().cpu())
+            truth_list.append(y.detach().cpu())
+
+    final_prediction = np.concatenate(pred_list).ravel()
+    final_truth = np.concatenate(truth_list).ravel()
+    nrmse= (metrics.mean_squared_error(final_truth, final_prediction) ** 0.5) / (max(final_truth) - min(final_truth))
+    avg_loss = loss / len(data_loader)
+    avg_mse = mse / len(data_loader)
+
+    return avg_loss, avg_mse, nrmse, final_prediction, final_truth
+
+
+def test_inference_esm_pos(args, model, dataset):
+    model.eval()
+    loss, mse = 0.0, 0.0
+    device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
+    criterion = nn.MSELoss().to(device)
+    data_loader = DataLoader(list(zip(*dataset)), batch_size=args.local_bs, shuffle=False)
+    pred_list, truth_list = [], []
+
+    with torch.no_grad():
+        for batch_idx, (xc, xp, y, ari_res, position) in enumerate(data_loader):
+            xc, xp = xc.float().to(device), xp.float().to(device)
+            ari_res = ari_res.float().to(device)
+            y = y.float().to(device)
+            model = model.to(device)
+            pred = model(xc, xp, ari_res, position)
 
             batch_loss = criterion(y, pred)
             loss += batch_loss.item()

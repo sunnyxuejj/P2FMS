@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
------------------------------------------------
-# File: misc.py
-# This file is created by Chuanting Zhang
-# Email: chuanting.zhang@kaust.edu.sa
-# Date: 2020-07-26 (YYYY-MM-DD)
------------------------------------------------
-"""
 import argparse
 import h5py
 import pandas as pd
@@ -529,6 +521,203 @@ def process_isolated(args, dataset):
         train[col] = (train_x_close, train_x_period, train_label)
         val[col] = (val_x_close, val_x_period, val_label)
         test[col] = (test_x_close, test_x_period, test_label)
+
+    return train, val, test
+
+
+def process_isolated_esm_position(args, dataset, cell_lng, cell_lat):
+    # data_csv_path = 'dataset/{}_{}_300clients_{}_esm_data_{}period.csv'.format(args.file.split('.')[0], args.type, args.esm_m, args.period_size)
+    data_csv_path = 'dataset/{}_{}_{}_esm_data_{}period.csv'.format(args.file.split('.')[0], args.type, args.esm_m, args.period_size)
+    train, val, test = dict(), dict(), dict()
+    column_names = dataset.columns[:args.bs]
+
+    for i, col in enumerate(column_names):
+        cell_traffic = dataset[col]
+        close_arr, period_arr, label_arr, ari_arr = [], [], [], []
+        start_idx = max(args.close_size, args.period_size * 24)
+        cell_pred_traffic = [None] * start_idx
+        if os.path.exists(data_csv_path):
+            dataset_ = pd.read_csv(data_csv_path)
+            predict_val = dataset_[str(col) + '_{}_pred'.format(args.esm_m)]
+        else:
+            for idx in tqdm.tqdm(range(start_idx, len(cell_traffic), 3)):
+                sub = cell_traffic[idx - args.period_size * 24: idx + 3]
+                if args.esm_m == 'sarima':
+                    pred = sarima_pred(args, sub, args.out_dim, col)
+                elif args.esm_m == 'ets':
+                    pred = ets_pred(args, sub, args.out_dim, col)
+                for i in range(len(pred)):
+                    cell_pred_traffic.append(pred[i])
+            predict_val = cell_pred_traffic
+            dataset[str(col) + '_{}_pred'.format(args.esm_m)] = cell_pred_traffic
+            # print(dataset.head())
+
+        for idx in range(start_idx, len(cell_traffic) - args.out_dim):
+            y_ = [cell_traffic.iloc[idx + i] for i in range(args.out_dim)]
+            # y_ = [cell_traffic.iloc[idx + args.out_dim - 1]]
+            label_arr.append(y_)
+            ari_arr.append([predict_val[idx + i] for i in range(args.out_dim)])
+
+            if args.close_size > 0:
+                x_close = [cell_traffic.iloc[idx - c] for c in range(1, args.close_size + 1)]
+                close_arr.append(x_close)
+            if args.period_size > 0:
+                x_period = [cell_traffic.iloc[idx - p * 24] for p in range(1, args.period_size + 1)]
+                period_arr.append(x_period)
+
+        cell_arr_close = np.array(close_arr)
+        cell_arr_close = cell_arr_close[:, :, np.newaxis]
+        cell_label = np.array(label_arr)
+        cell_ari_res = np.array(ari_arr)
+
+        test_len = args.test_days * 24
+        val_len = args.val_days * 24
+        train_len = len(cell_arr_close) - test_len - val_len
+        train_x_close = cell_arr_close[:train_len]
+        val_x_close = cell_arr_close[train_len:train_len + val_len]
+        test_x_close = cell_arr_close[-test_len:]
+
+        # train_x_close = cell_arr_close[:-test_len][:-val_len]
+        # val_x_close = cell_arr_close[:-test_len][-val_len:]
+        # test_x_close = cell_arr_close[-test_len:]
+
+        # train_label = cell_label[:-test_len][:-val_len]
+        # val_label = cell_label[:-test_len][-val_len:]
+        # test_label = cell_label[-test_len:]
+
+        train_label = cell_label[:train_len]
+        train_ari_res = cell_ari_res[:train_len]
+        train_lng, train_lat = cell_lng[i], cell_lat[i]
+        train_position = np.array([train_lng, train_lat] * train_len).reshape(-1, 2)
+        val_label = cell_label[train_len:train_len + val_len]
+        val_ari_res = cell_ari_res[train_len:train_len + val_len]
+        val_position = np.array([train_lng, train_lat] * val_len).reshape(-1, 2)
+        test_label = cell_label[-test_len:]
+        test_ari_res = cell_ari_res[-test_len:]
+        test_position = np.array([train_lng, train_lat] * test_len).reshape(-1, 2)
+
+        if args.period_size > 0:
+            cell_arr_period = np.array(period_arr)
+            cell_arr_period = cell_arr_period[:, :, np.newaxis]
+
+            # train_x_period = cell_arr_period[:-test_len][:-val_len]
+            # val_x_period = cell_arr_period[:-test_len][-val_len:]
+            # test_x_period = cell_arr_period[-test_len:]
+
+            train_x_period = cell_arr_period[:train_len]
+            val_x_period = cell_arr_period[train_len:train_len + val_len]
+            test_x_period = cell_arr_period[-test_len:]
+
+        else:
+            train_x_period = train_x_close
+            val_x_period = val_x_close
+            test_x_period = test_x_close
+
+        train[col] = (train_x_close, train_x_period, train_label, train_ari_res, train_position)
+        val[col] = (val_x_close, val_x_period, val_label, val_ari_res, val_position)
+        test[col] = (test_x_close, test_x_period, test_label, test_ari_res, test_position)
+
+    if not os.path.exists(data_csv_path):
+        dataset.to_csv(data_csv_path)
+
+    return train, val, test
+
+
+def process_isolated_esm_position_unbalance(args, dataset, cell_lng, cell_lat):
+    # data_csv_path = 'dataset/{}_{}_300clients_{}_esm_data_{}period.csv'.format(args.file.split('.')[0], args.type, args.esm_m, args.period_size)
+    data_csv_path = 'dataset/{}_{}_{}_esm_data_{}period.csv'.format(args.file.split('.')[0], args.type, args.esm_m, args.period_size)
+    train, val, test = dict(), dict(), dict()
+    column_names = dataset.columns[:args.bs]
+
+    for i, col in enumerate(column_names):
+        cell_traffic = dataset[col]
+        close_arr, period_arr, label_arr, ari_arr = [], [], [], []
+        start_idx = max(args.close_size, args.period_size * 24)
+        cell_pred_traffic = [None] * start_idx
+        if os.path.exists(data_csv_path):
+            dataset_ = pd.read_csv(data_csv_path)
+            predict_val = dataset_[str(col) + '_{}_pred'.format(args.esm_m)]
+        else:
+            for idx in tqdm.tqdm(range(start_idx, len(cell_traffic), 3)):
+                sub = cell_traffic[idx - args.period_size * 24: idx + 3]
+                if args.esm_m == 'sarima':
+                    pred = sarima_pred(args, sub, args.out_dim, col)
+                elif args.esm_m == 'ets':
+                    pred = ets_pred(args, sub, args.out_dim, col)
+                for i in range(len(pred)):
+                    cell_pred_traffic.append(pred[i])
+            predict_val = cell_pred_traffic
+            dataset[str(col) + '_{}_pred'.format(args.esm_m)] = cell_pred_traffic
+            # print(dataset.head())
+
+        for idx in range(start_idx, len(cell_traffic) - args.out_dim):
+            y_ = [cell_traffic.iloc[idx + i] for i in range(args.out_dim)]
+            # y_ = [cell_traffic.iloc[idx + args.out_dim - 1]]
+            label_arr.append(y_)
+            ari_arr.append([predict_val[idx + i] for i in range(args.out_dim)])
+
+            if args.close_size > 0:
+                x_close = [cell_traffic.iloc[idx - c] for c in range(1, args.close_size + 1)]
+                close_arr.append(x_close)
+            if args.period_size > 0:
+                x_period = [cell_traffic.iloc[idx - p * 24] for p in range(1, args.period_size + 1)]
+                period_arr.append(x_period)
+
+        cell_arr_close = np.array(close_arr)
+        cell_arr_close = cell_arr_close[:, :, np.newaxis]
+        cell_label = np.array(label_arr)
+        cell_ari_res = np.array(ari_arr)
+
+        test_len = args.test_days * 24
+        val_len = args.val_days * 24
+        train_start = np.random.choice(range(20), 1, replace=False)[0] * 24
+        train_len = len(cell_arr_close) - test_len - val_len
+        train_x_close = cell_arr_close[train_start:train_len]
+        val_x_close = cell_arr_close[train_len:train_len + val_len]
+        test_x_close = cell_arr_close[-test_len:]
+
+        # train_x_close = cell_arr_close[:-test_len][:-val_len]
+        # val_x_close = cell_arr_close[:-test_len][-val_len:]
+        # test_x_close = cell_arr_close[-test_len:]
+
+        # train_label = cell_label[:-test_len][:-val_len]
+        # val_label = cell_label[:-test_len][-val_len:]
+        # test_label = cell_label[-test_len:]
+
+        train_label = cell_label[train_start:train_len]
+        train_ari_res = cell_ari_res[train_start:train_len]
+        train_lng, train_lat = cell_lng[i], cell_lat[i]
+        train_position = np.array([train_lng, train_lat] * (train_len - train_start)).reshape(-1, 2)
+        val_label = cell_label[train_len:train_len + val_len]
+        val_ari_res = cell_ari_res[train_len:train_len + val_len]
+        val_position = np.array([train_lng, train_lat] * val_len).reshape(-1, 2)
+        test_label = cell_label[-test_len:]
+        test_ari_res = cell_ari_res[-test_len:]
+        test_position = np.array([train_lng, train_lat] * test_len).reshape(-1, 2)
+
+        if args.period_size > 0:
+            cell_arr_period = np.array(period_arr)
+            cell_arr_period = cell_arr_period[:, :, np.newaxis]
+
+            # train_x_period = cell_arr_period[:-test_len][:-val_len]
+            # val_x_period = cell_arr_period[:-test_len][-val_len:]
+            # test_x_period = cell_arr_period[-test_len:]
+
+            train_x_period = cell_arr_period[train_start:train_len]
+            val_x_period = cell_arr_period[train_len:train_len + val_len]
+            test_x_period = cell_arr_period[-test_len:]
+
+        else:
+            train_x_period = train_x_close
+            val_x_period = val_x_close
+            test_x_period = test_x_close
+
+        train[col] = (train_x_close, train_x_period, train_label, train_ari_res, train_position)
+        val[col] = (val_x_close, val_x_period, val_label, val_ari_res, val_position)
+        test[col] = (test_x_close, test_x_period, test_label, test_ari_res, test_position)
+
+    if not os.path.exists(data_csv_path):
+        dataset.to_csv(data_csv_path)
 
     return train, val, test
 
