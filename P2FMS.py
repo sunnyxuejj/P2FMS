@@ -86,7 +86,7 @@ if __name__ == '__main__':
             local_model.train()
             start_time = time.time()
             w, loss, w_personal[cell] = local_update.personal_esm_pos_update(model=copy.deepcopy(local_model), personal_key=personal_key, global_round=epoch)
-            print('| client_{} | local update time {:5.2f} ms|'.format(cell, (time.time() - start_time) * 1000))
+            # print('| client_{} | local update time {:5.2f} ms|'.format(cell, (time.time() - start_time) * 1000))
             local_weights.append(copy.deepcopy(w))
             avg_weight.append(len(train[cell][0]))
             local_losses.append(copy.deepcopy(loss))

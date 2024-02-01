@@ -174,6 +174,91 @@ class LocalUpdate(object):
         # print('| client_{} | local update time {:5.2f} ms|' .format(self.user, (time.time() - start_time) * 1000))
         return model.state_dict(), sum(epoch_loss)/len(epoch_loss), w_personal_cell
 
+    def personal_esm_pos_update(self, model, personal_key, global_round=0):
+        model.train()
+        epoch_loss = []
+        lr = self.args.lr
+        if self.args.opt == 'adam':
+            optimizer_model = torch.optim.Adam(model.parameters(), lr=lr)
+        elif self.args.opt == 'sgd':
+            optimizer_model = torch.optim.SGD(model.parameters(), lr=lr, momentum=self.args.momentum)
+
+        start_time = time.time()
+        loss_int_sum = 0
+        val_loss_cur = 10e9
+
+        global_weight_collector = {}
+        w_glob = model.state_dict()
+        for name in w_glob:
+            global_weight_collector[name] = copy.deepcopy(w_glob[name])
+
+        w_personal_cell = {}
+        test_mse, test_mae = 0.0, 0.0
+        for iter in range(self.args.client_all_epoch):
+            if iter < self.args.personal_epoch:
+                for name, param in model.named_parameters():
+                    if name in personal_key:
+                        param.requires_grad = True
+                    else:
+                        param.requires_grad = False
+            else:
+                for name, param in model.named_parameters():
+                    if name in personal_key:
+                        param.requires_grad = False
+                    else:
+                        param.requires_grad = True
+
+            batch_loss, esm_batch_loss = [], []
+            begin_time = time.time()
+            for batch_idx, (xc, xp, y, ari_res, position) in enumerate(self.train_loader):
+                xc, xp = xc.float().to(self.device), xp.float().to(self.device)
+                y = y.float().to(self.device)
+                ari_res = ari_res.float().to(self.device)
+                model = model.to(self.device)
+
+                model.train()
+                model.zero_grad()
+                model_pred = model(xc, xp, ari_res, position)
+
+                loss = self.criterion_model(y, model_pred)
+                if self.args.fedprox:
+                    fed_prox_reg = 0.0
+                    mu = 0.001
+                    for param_index, (name, param) in enumerate(model.named_parameters()):
+                        if name not in personal_key and param.requires_grad == True:
+                            fed_prox_reg += ((mu / 2) * torch.norm((param - global_weight_collector[name])) ** 2)
+                    loss += fed_prox_reg
+                loss.backward()
+                optimizer_model.step()
+
+                batch_loss.append(loss.item())
+                loss_int_sum += loss.data
+                if batch_idx % self.args.log_interval == 0 and batch_idx > 0:
+                    time_int = time.time() - begin_time
+                    loss_int = loss_int_sum.item() / self.args.log_interval
+                    #print('| client_{} | epoch {:3d} | {:5d}/{:5d} batches | ms/batch {:5.2f} | '
+                    #                         'model_loss {:5.4f} '.format(
+                    #                        self.user, iter, batch_idx, len(self.train_loader), time_int * 1000 / self.args.log_interval, loss_int))
+                    loss_int_sum = 0
+                    begin_time = time.time()
+
+            epoch_loss.append(sum(batch_loss)/len(batch_loss))
+            elapsed = time.time() - start_time
+            # print('| client_{} | epoch {:3d} | {:5.2f} ms| '
+            #      'model_loss {:5.4f} ' .format(
+            #    self.user, iter, elapsed * 1000, sum(batch_loss)/len(batch_loss)))
+
+            if iter < self.args.personal_epoch:
+                val_loss, avg_mse, nrmse, prediction, truth = test_inference_esm_pos(self.args, model, self.val_data)
+                #print('| client_{} | epoch {:3d} |val_loss {:5.4f} '.format(self.user, iter, val_loss))
+                if val_loss < val_loss_cur:
+                #    print('save personal model', flush=True)
+                    val_loss_cur = val_loss
+                    for key in model.state_dict().keys() & personal_key:
+                        w_personal_cell[key] = model.state_dict()[key]
+
+        return model.state_dict(), sum(epoch_loss)/len(epoch_loss), w_personal_cell
+
 
 def test_inference(args, model, dataset):
     model.eval()
