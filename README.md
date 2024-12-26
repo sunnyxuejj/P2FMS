@@ -1,5 +1,5 @@
 ## Introduction 
-This is the source code for "BBurst-Sensitive Traffic Forecast via Multi-Property Personalized Fusion in Federated Learning"
+Offical code for the paper "Burst-Sensitive Traffic Forecast via Multi-Property Personalized Fusion in Federated Learning"
 
 ## Datasets
 - [Mlian](https://drive.google.com/file/d/1aKh1icdmK9ho3mOZiNg593ivgIeycWKz/view)
